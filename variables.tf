@@ -13,6 +13,7 @@ variable "nodecount" {
   default = 2
 }
 
+# we are not using these ip addresses while allocating VMs but using Dynamic addresses.
 variable "ip_addresses" {
   default = [
     "10.0.2.11",
