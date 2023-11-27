@@ -73,14 +73,14 @@ resource "azurerm_network_interface" "my_terraform_nic" {
     name                          = "my_nic_configuration"
     subnet_id                     = azurerm_subnet.my_terraform_subnet.id
     private_ip_address_allocation = "Dynamic"
-    
+
 
   }
 }
 
- #Connect the security group to the network interface
+#Connect the security group to the network interface
 resource "azurerm_network_interface_security_group_association" "example" {
-  count = 2
+  count                     = 2
   network_interface_id      = azurerm_network_interface.my_terraform_nic.*.id[count.index]
   network_security_group_id = azurerm_network_security_group.my_terraform_nsg.id
 }
@@ -98,11 +98,11 @@ resource "azurerm_storage_account" "my_storage_account" {
 # Create virtual machine
 resource "azurerm_windows_virtual_machine" "main" {
   #count = var.nodecount
-  name                  = "${var.prefix}-${count.index}"
-  admin_username        = "azureuser"
-  admin_password        = random_password.password.result
-  location              = azurerm_resource_group.rg.location
-  resource_group_name   = azurerm_resource_group.rg.name
+  name                = "${var.prefix}-${count.index}"
+  admin_username      = "azureuser"
+  admin_password      = random_password.password.result
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
   #network_interface_ids = azurerm_network_interface.network-interface.*.id[count.index]
   network_interface_ids = ["${element(azurerm_network_interface.my_terraform_nic.*.id, count.index)}"]
   size                  = "Standard_DS1_v2"
@@ -168,3 +168,81 @@ resource "random_pet" "prefix" {
   prefix = var.prefix
   length = 1
 }
+
+
+resource "azurerm_virtual_machine_extension" "azure_monitor_agent" {
+  depends_on = [azurerm_virtual_machine_extension.da]
+  count = var.nodecount
+  name                       = "AzureMonitorWindowsAgent"
+  virtual_machine_id         = element(azurerm_windows_virtual_machine.main.*.id, count.index)
+  publisher                  = "Microsoft.Azure.Monitor"
+  type                       = "AzureMonitorWindowsAgent"
+  type_handler_version       = "1.9"
+  automatic_upgrade_enabled  = true
+  auto_upgrade_minor_version = true
+  settings                   = jsonencode({ "enableAMA" = "true" })
+}
+resource "azurerm_virtual_machine_extension" "da" {
+  count = var.nodecount
+  name = "DependencyAgentWindows"
+  # virtual_machine_id         = azurerm_windows_virtual_machine.main[count.index].id
+  virtual_machine_id         = element(azurerm_windows_virtual_machine.main.*.id, count.index)
+  publisher                  = "Microsoft.Azure.Monitoring.DependencyAgent"
+  type                       = "DependencyAgentWindows"
+  type_handler_version       = "9.10"
+  automatic_upgrade_enabled  = true
+  auto_upgrade_minor_version = true
+  settings                   = jsonencode({ "enableAMA" = "true" })
+
+}
+resource "azurerm_log_analytics_workspace" "workspace" {
+  name                = "${var.prefix}-loganalyticsws"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku                 = "PerGB2018"
+  retention_in_days   = 30
+}
+resource "azurerm_monitor_data_collection_rule" "dcrrule" {
+  depends_on = [ azurerm_virtual_machine_extension.azure_monitor_agent ]
+  name                = "MSVMI-${var.prefix}"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+
+  destinations {
+    log_analytics {
+      workspace_resource_id = azurerm_log_analytics_workspace.workspace.id
+      name                  = "test-destination-log"
+    }
+
+    azure_monitor_metrics {
+      name = "test-destination-metrics"
+    }
+  }
+
+  data_flow {
+    streams      = ["Microsoft-InsightsMetrics"]
+    destinations = ["test-destination-log"]
+  }
+
+  data_sources {
+
+    performance_counter {
+      streams                       = ["Microsoft-InsightsMetrics"]
+      sampling_frequency_in_seconds = 60
+      counter_specifiers            = ["\\VmInsights\\DetailedMetrics"]
+      name                          = "VMInsightsPerfCounters"
+    }
+  }
+}
+
+# associate to a Data Collection Rule
+resource "azurerm_monitor_data_collection_rule_association" "dcr_assoc" {
+  depends_on              = [azurerm_monitor_data_collection_rule.dcrrule]
+  name                    = "${var.prefix}-dcra"
+  count = var.nodecount
+  target_resource_id      = element(azurerm_windows_virtual_machine.main.*.id, count.index)
+  data_collection_rule_id = azurerm_monitor_data_collection_rule.dcrrule.id
+  description             = "example"
+}
+
+
